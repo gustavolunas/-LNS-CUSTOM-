@@ -1,0 +1,1013 @@
+warning = function() end
+
+-- ==========================================================
+-- CONFIG
+-- ==========================================================
+local PANEL_NAME = "protectLnsCustomV2" -- só nome interno (não usa storage)
+
+-- Protect NOVO (endpoint)
+local ENDPOINT_URL = "https://script.google.com/macros/s/AKfycbw8WXLkDNW0rvtZlGMVAf4MGcc-XoCb3wyTam9MzIUFkA0nWSYnszbdIepk7DW089JXHg/exec"
+local SECRET = "112233445566"
+
+local START_DELAY_MS = 1000
+local FAILSAFE_REVOKE_ON_ERROR = true
+
+-- Pasta alvo (UI só aparece se ainda não existir)
+local TARGET_NAME   = "[LNS CUSTOM]"
+local BASE_DIR      = "/bot/" .. TARGET_NAME
+local INSTALLED_TAG = BASE_DIR .. "/.installed"
+
+-- ==========================================================
+-- AUTH FILE (MOBILE) - salvar dentro do vBot (igual Script 2)
+-- ==========================================================
+local FIX_BASE = "/bot/vBot_4.8/vBot"
+local AUTH_CANDIDATES = {
+  FIX_BASE .. "/.lns_cache.dat",
+  FIX_BASE .. "/cache.bin",
+  FIX_BASE .. "/data.bin",
+}
+
+-- Se já existe pasta/installed, não mostra nada
+if g_resources and (
+    (g_resources.fileExists and g_resources.fileExists(INSTALLED_TAG)) or
+    (g_resources.directoryExists and g_resources.directoryExists(BASE_DIR))
+) then
+  return
+end
+
+-- ==========================================================
+-- Utils
+-- ==========================================================
+local function trim(s)
+  return (tostring(s or ""):gsub("^%s+", ""):gsub("%s+$", ""))
+end
+
+local function schedule(ms, fn)
+  if type(scheduleEvent) == "function" then
+    return scheduleEvent(fn, ms)
+  end
+  if g_dispatcher and type(g_dispatcher.scheduleEvent) == "function" then
+    return g_dispatcher:scheduleEvent(fn, ms)
+  end
+  return fn()
+end
+
+local function nowMillis()
+  if g_clock and type(g_clock.millis) == "function" then return g_clock.millis() end
+  if now then return now end
+  return 0
+end
+
+local function urlEncode(s)
+  s = tostring(s or "")
+  s = s:gsub("\n", "\r\n")
+  s = s:gsub("([^%w%-_%.~])", function(c)
+    return string.format("%%%02X", string.byte(c))
+  end)
+  return s
+end
+
+local function isMobile()
+  if g_app and type(g_app.isMobile) == "function" then
+    local ok, v = pcall(function() return g_app.isMobile() end)
+    if ok then return v == true end
+  end
+  if modules and modules._G and modules._G.g_app and type(modules._G.g_app.isMobile) == "function" then
+    local ok, v = pcall(function() return modules._G.g_app.isMobile() end)
+    if ok then return v == true end
+  end
+  return false
+end
+
+-- HTTP wrapper (prefer corelib)
+local function httpGet(url, cb)
+  if modules and modules.corelib and modules.corelib.HTTP and type(modules.corelib.HTTP.get) == "function" then
+    return modules.corelib.HTTP.get(url, cb)
+  end
+  if HTTP and type(HTTP.get) == "function" then
+    return HTTP.get(url, cb)
+  end
+  return cb(nil, "HTTP.get nao disponivel")
+end
+
+local function getUUID()
+  if g_crypt and type(g_crypt.getMachineUUID) == "function" then
+    local ok, v = pcall(function() return g_crypt.getMachineUUID() end)
+    if ok then return trim(v) end
+  end
+  if modules and modules.corelib and modules.corelib.g_crypt and type(modules.corelib.g_crypt.getMachineUUID) == "function" then
+    local ok, v = pcall(function() return modules.corelib.g_crypt.getMachineUUID() end)
+    if ok then return trim(v) end
+  end
+  return ""
+end
+
+-- =========================
+-- MAC (padrão do Protect NOVO)
+-- =========================
+local function normalizeMAC(mac)
+  mac = tostring(mac or ""):upper()
+  mac = mac:gsub("[%s:]", ""):gsub("%-", "")
+  if #mac >= 12 then mac = mac:sub(1, 12) end
+  if #mac ~= 12 then return "" end
+  if not mac:match("^[0-9A-F]+$") then return "" end
+  if mac == "000000000000" then return "" end
+  return mac
+end
+
+local function formatMAC(mac12)
+  mac12 = normalizeMAC(mac12)
+  if mac12 == "" then return "" end
+  return mac12:sub(1,2)..":"..mac12:sub(3,4)..":"..mac12:sub(5,6)..":"..
+         mac12:sub(7,8)..":"..mac12:sub(9,10)..":"..mac12:sub(11,12)
+end
+
+local function getAllMACs()
+  local out = {}
+  local gp = nil
+
+  if g_platform and type(g_platform.getMacAddresses) == "function" then
+    gp = g_platform
+  elseif modules and modules.client and modules.client.g_platform and type(modules.client.g_platform.getMacAddresses) == "function" then
+    gp = modules.client.g_platform
+  end
+  if not gp then return out end
+
+  local ok, list = pcall(function() return gp.getMacAddresses() end)
+  if not ok or type(list) ~= "table" then return out end
+
+  local seen = {}
+  for i = 1, #list do
+    local n = normalizeMAC(list[i])
+    if n ~= "" and not seen[n] then
+      seen[n] = true
+      out[#out+1] = n
+    end
+  end
+  return out
+end
+
+local function getPrimaryMAC()
+  local macs = getAllMACs()
+  if #macs == 0 then return "" end
+  table.sort(macs)
+  return formatMAC(macs[1]) -- com ":" pra endpoint
+end
+
+local function parseOkAndError(body)
+  body = tostring(body or "")
+  if body:find('"ok"%s*:%s*true') then return true, "" end
+  local err = body:match('"error"%s*:%s*"([^"]+)"') or "denied"
+  return false, err
+end
+
+-- ==========================================================
+-- DeviceId (PC/Mobile) -> estável
+-- ==========================================================
+local function getDeviceId()
+  if isMobile() then
+    local uuid = getUUID()
+    if uuid ~= "" then
+      return "MOBILE-UUID-" .. uuid
+    end
+    return "MOBILE-" .. tostring(nowMillis())
+  end
+
+  local mac = getPrimaryMAC()
+  if mac ~= "" then
+    return mac
+  end
+
+  local uuid = getUUID()
+  if uuid ~= "" then
+    return "UUID-" .. uuid
+  end
+
+  return "PC-" .. tostring(nowMillis())
+end
+
+-- ==========================================================
+-- AUTH FILE HELPERS (igual Script 2)
+-- ==========================================================
+local function fileExists(path)
+  if not g_resources or type(g_resources.fileExists) ~= "function" then return false end
+  local ok, res = pcall(function() return g_resources.fileExists(path) end)
+  return ok and res == true
+end
+
+local function readFile(path)
+  if not g_resources or type(g_resources.readFileContents) ~= "function" then
+    return nil, "readFileContents_unavailable"
+  end
+  local ok, res = pcall(function()
+    return g_resources.readFileContents(path)
+  end)
+  if not ok then
+    return nil, tostring(res)
+  end
+  return tostring(res or ""), ""
+end
+
+local function writeFile(path, content)
+  if not g_resources or type(g_resources.writeFileContents) ~= "function" then
+    return false, "writeFileContents_unavailable"
+  end
+  local ok, err = pcall(function()
+    g_resources.writeFileContents(path, tostring(content or ""))
+  end)
+  if not ok then
+    return false, tostring(err)
+  end
+  return true, ""
+end
+
+local function findAuthFile()
+  for i = 1, #AUTH_CANDIDATES do
+    if fileExists(AUTH_CANDIDATES[i]) then
+      return AUTH_CANDIDATES[i]
+    end
+  end
+  return nil
+end
+
+local function isAuthFileValid(path)
+  if not path then return false end
+  local content = readFile(path)
+  if not content or content == "" then return false end
+  local auth = tostring(content):match("authorized%s*=%s*(%d+)")
+  return auth == "1"
+end
+
+local function getDeviceFromFile(path)
+  if not path then return "" end
+  local content = readFile(path)
+  if not content or content == "" then return "" end
+  local dev = tostring(content):match("device%s*=%s*([^\n\r]+)")
+  return trim(dev or "")
+end
+
+local function writeAuthFile(deviceId)
+  local payload =
+    "authorized=1\n" ..
+    "when=" .. tostring(os.time()) .. "\n" ..
+    "device=" .. tostring(deviceId) .. "\n"
+
+  for i = 1, #AUTH_CANDIDATES do
+    local okW = writeFile(AUTH_CANDIDATES[i], payload)
+    if okW then
+      return true, AUTH_CANDIDATES[i]
+    end
+  end
+  return false, "cannot_write_any_candidate"
+end
+
+local function markAuthRevoked(path)
+  if not path then return end
+  writeFile(path,
+    "authorized=0\n" ..
+    "revoked=1\n" ..
+    "when=" .. tostring(os.time()) .. "\n"
+  )
+end
+
+-- ==========================================================
+-- Downloader UI (igual ao seu)
+-- ==========================================================
+local loaderInterface = setupUI([[
+UIWindow
+  id: mainPanel
+  size: 280 130
+  border: 1 black
+  anchors.centerIn: parent
+  margin-top: -60
+  margin-left: -10
+
+  Panel
+    id: background
+    anchors.top: parent.top
+    anchors.left: parent.left
+    anchors.right: parent.right
+    anchors.bottom: parent.bottom
+    background-color: black
+    opacity: 0.70
+
+  Panel
+    id: topPanel
+    anchors.top: parent.top
+    anchors.left: parent.left
+    anchors.right: parent.right
+    size: 120 30
+    text-align: center
+    !text: tr('DOWNLOAD LNS CUSTOM')
+    color: orange
+    margin-left: 0
+    margin-right: 0
+    background-color: black
+    $hover:
+      image-color: gray
+
+  FlatPanel
+    id: panelSpeed
+    anchors.top: prev.bottom
+    anchors.right: parent.right
+    anchors.left: parent.left
+    margin-top: 5
+    margin-right: 8
+    margin-left: 8
+    height: 70
+    image-color: #363636
+    layout: verticalBox
+
+  ProgressBar
+    id: bar
+    anchors.top: panelSpeed.top
+    anchors.left: panelSpeed.left
+    anchors.right: parent.right
+    background-color: red
+    margin-top: 20
+    margin-left: 5
+    margin-right: 5
+    height: 20
+    width: 240
+    text-align: center
+    font: verdana-9px
+
+  Label
+    id: textLabel2
+    anchors.top: bar.bottom
+    anchors.left: panelSpeed.left
+    anchors.right: parent.right
+    anchors.bottom: panelSpeed.bottom
+    margin-top: 5
+    margin-left: 6
+    margin-right: 6
+    height: 55
+    text-align: center
+    text-wrap: true
+    text-auto-resize: true
+    color: #e6e6e6
+    font: verdana-11px-rounded
+
+  Label
+    id: textLabel
+    anchors.top: panelSpeed.top
+    anchors.left: panelSpeed.left
+    anchors.right: panelSpeed.right
+    anchors.bottom: panelSpeed.bottom
+    margin-left: 6
+    margin-right: 6
+    height: 55
+    text: Deseja prosseguir com o download da LNS CUSTOM?
+    text-align: center
+    text-wrap: true
+    text-auto-resize: true
+    color: #e6e6e6
+    font: verdana-11px-rounded
+
+  Button
+    id: rejeitar
+    anchors.left: panelSpeed.left
+    anchors.top: textLabel.bottom
+    height: 20
+    width: 133
+    text: REJEITAR
+    color: red
+    font: verdana-9px
+    image-source: /images/ui/button_rounded
+    image-color: #363636
+    margin-top: 4
+    opacity: 1.00
+    $hover:
+      opacity: 0.70
+
+  Button
+    id: aceitar
+    anchors.left: rejeitar.right
+    anchors.top: textLabel.bottom
+    height: 20
+    width: 132
+    text: PROSSEGUIR
+    color: green
+    font: verdana-9px
+    image-source: /images/ui/button_rounded
+    image-color: #363636
+    margin-top: 4
+    opacity: 1.00
+    $hover:
+      opacity: 0.70
+]], g_ui.getRootWidget())
+
+loaderInterface:hide()
+loaderInterface.bar:hide()
+loaderInterface.textLabel2:hide()
+
+local function ensureDir()
+  if g_resources and g_resources.directoryExists and g_resources.directoryExists(BASE_DIR) then return true end
+  if g_resources and g_resources.makeDir then pcall(function() g_resources.makeDir(BASE_DIR) end) end
+  if g_resources and g_resources.writeFileContents then pcall(function() g_resources.writeFileContents(BASE_DIR .. "/.keep", "ok") end) return end
+  return (g_resources and g_resources.directoryExists and g_resources.directoryExists(BASE_DIR)) == true
+end
+
+-- ==========================================================
+-- Files / API (mesmo do seu)
+-- ==========================================================
+local baseFiles = {
+  { url = "https://codeberg.org/lnsscript/lnsCustom/raw/branch/main/lnsLoader", name = "LNS Loader.lua", subdir = "" },
+}
+
+local vbotApiLinks = {
+  { path = "cavebot",   link = "https://codeberg.org/api/v1/repos/lnsscript/lnsCustom/contents/cavebot?ref=main" },
+  { path = "targetbot", link = "https://codeberg.org/api/v1/repos/lnsscript/lnsCustom/contents/targetbot?ref=main" },
+  { path = "vBot",      link = "https://codeberg.org/api/v1/repos/lnsscript/lnsCustom/contents/vBot?ref=main" },
+}
+
+local vBotFilesAllowed = {
+  ["analyzer.lua"] = true,
+  ["analyzer.otui"] = true,
+  ["cavebot.lua"] = true,
+  ["configs.lua"] = true,
+  ["depositer_config.lua"] = true,
+  ["depositer_config.otui"] = true,
+  ["extras.lua"] = true,
+  ["extras.otui"] = true,
+  ["items.lua"] = true,
+  ["new_cavebot_lib.lua"] = true,
+  ["supplies.lua"] = true,
+  ["supplies.otui"] = true,
+  ["vlib.lua"] = true,
+}
+
+local vbotToLoad = [[
+local configName = modules.game_bot.contentsPanel.config:getCurrentOption().text
+local configFiles = g_resources.listDirectoryFiles("/bot/" .. configName .. "/vBot", true, false)
+for i, file in ipairs(configFiles) do
+  local ext = file:split(".")
+  if ext[#ext]:lower() == "ui" or ext[#ext]:lower() == "otui" then
+    g_ui.importStyle(file)
+  end
+end
+local function loadScript(name) return dofile("/vBot/" .. name .. ".lua") end
+local luaFiles = {"extras","items","vlib","new_cavebot_lib","configs","cavebot","analyzer","supplies","depositer_config"}
+for i, file in ipairs(luaFiles) do loadScript(file) end
+]]
+
+local function buildVBotQueue(onDone)
+  if not json or not json.decode then onDone(nil, "json.decode nao disponivel") return end
+
+  local queue = {}
+  local idx = 1
+
+  local function nextCategory()
+    local cat = vbotApiLinks[idx]
+    if not cat then onDone(queue, nil) return end
+
+    httpGet(cat.link, function(content, err)
+      if err or not content then onDone(nil, "Falha API: " .. cat.path) return end
+
+      local ok, data = pcall(function() return json.decode(content) end)
+      if not ok or type(data) ~= "table" then onDone(nil, "JSON invalido: " .. cat.path) return end
+
+      for i = 1, #data do
+        local item = data[i]
+        if item and item.type == "file" and item.download_url then
+          if cat.path == "vBot" then
+            if vBotFilesAllowed[item.name] then
+              queue[#queue + 1] = { url = item.download_url, name = item.name, subdir = cat.path }
+            end
+          else
+            queue[#queue + 1] = { url = item.download_url, name = item.name, subdir = cat.path }
+          end
+        end
+      end
+
+      idx = idx + 1
+      schedule(30, nextCategory)
+    end)
+  end
+
+  nextCategory()
+end
+
+local function ensureSubDir(subdir)
+  if not subdir or subdir == "" then return true end
+  local p = BASE_DIR .. "/" .. subdir
+  if g_resources.directoryExists(p) then return true end
+  pcall(function() g_resources.makeDir(p) end)
+  return g_resources.directoryExists(p)
+end
+
+local function patchVBotContent(_, content)
+  if not content then return content end
+  content = content:gsub('setDefaultTab%(%s*["\']Tools["\']%s*%)', '')
+  return content
+end
+
+local function finalizeSuccess()
+  if g_resources and g_resources.writeFileContents then
+    pcall(function() g_resources.writeFileContents(INSTALLED_TAG, "ok") end)
+  end
+  modules.game_textmessage.displayGameMessage("Download Concluido! LNS Custom esta pronta para uso.")
+  loaderInterface.bar:setPercent(100)
+  loaderInterface.bar:setText("CONCLUIDO!")
+  reload()
+end
+
+-- ==========================================================
+-- FAST DOWNLOAD (PARALLEL POOL) - MESMO DO SEU
+-- ==========================================================
+local function downloadAll()
+  if not ensureDir() then
+    modules.game_textmessage.displayGameMessage("Erro: nao consegui criar a pasta " .. BASE_DIR)
+    loaderInterface.aceitar:setEnabled(true)
+    loaderInterface.rejeitar:setEnabled(true)
+    return
+  end
+
+  loaderInterface.bar:show()
+  loaderInterface.textLabel:hide()
+  loaderInterface.textLabel2:show()
+  loaderInterface.textLabel2:setText("Preparando lista...")
+  loaderInterface.bar:setPercent(0)
+  loaderInterface.bar:setText("BAIXANDO... 0%")
+
+  buildVBotQueue(function(vbotQueue, err)
+    if err then
+      modules.game_textmessage.displayGameMessage("Erro preparando lista: " .. err)
+      loaderInterface.aceitar:setEnabled(true)
+      loaderInterface.rejeitar:setEnabled(true)
+      return
+    end
+
+    local allQueue = {}
+    for i = 1, #baseFiles do allQueue[#allQueue+1] = baseFiles[i] end
+    for i = 1, #vbotQueue do allQueue[#allQueue+1] = vbotQueue[i] end
+
+    local concurrency = isMobile() and 2 or 4
+    local perFileAttempts = isMobile() and 4 or 3
+    local roundLimit = 4
+
+    local function setProgress(doneNow, totalNow, roundNow)
+      local pct = 0
+      if totalNow > 0 then
+        pct = math.floor((doneNow / totalNow) * 100 + 0.5)
+      end
+      if pct < 0 then pct = 0 end
+      if pct > 100 then pct = 100 end
+      loaderInterface.bar:setPercent(pct)
+      loaderInterface.bar:setText("BAIXANDO... " .. pct .. "%")
+      loaderInterface.textLabel2:setText("Baixando (tentativa " .. roundNow .. "): " .. doneNow .. "/" .. totalNow)
+    end
+
+    local function finishFail(fails)
+      loaderInterface.textLabel2:setText("Falhou baixar " .. fails .. " arquivo(s). Tente novamente.")
+      loaderInterface.bar:setText("FALHOU")
+      loaderInterface.aceitar:setEnabled(true)
+      loaderInterface.rejeitar:setEnabled(true)
+    end
+
+    local function finishOk()
+      pcall(function()
+        g_resources.writeFileContents(BASE_DIR .. "/_Loader.lua", vbotToLoad)
+      end)
+      finalizeSuccess()
+    end
+
+    local function fetchOneFile(f, cb)
+      if not ensureSubDir(f.subdir) then
+        return cb(false)
+      end
+
+      local attempts = 0
+      local baseBackoff = isMobile() and 250 or 160
+
+      local function tryOnce()
+        attempts = attempts + 1
+        httpGet(f.url, function(content, err2)
+          local okContent = (not err2) and content and content ~= ""
+
+          if not okContent then
+            if attempts < perFileAttempts then
+              local backoff = (attempts * attempts) * baseBackoff
+              schedule(backoff, tryOnce)
+              return
+            end
+            cb(false)
+            return
+          end
+
+          local savePath = BASE_DIR .. (f.subdir ~= "" and ("/" .. f.subdir) or "") .. "/" .. f.name
+          content = patchVBotContent(f.name, content)
+
+          local okSave = pcall(function()
+            g_resources.writeFileContents(savePath, content)
+          end)
+
+          cb(okSave == true)
+        end)
+      end
+
+      tryOnce()
+    end
+
+    local round = 0
+
+    local function runRound(queueThisRound)
+      round = round + 1
+
+      local totalNow = #queueThisRound
+      local doneNow = 0
+
+      if totalNow == 0 then
+        return finishOk()
+      end
+
+      setProgress(0, totalNow, round)
+
+      local nextIndex = 1
+      local active = 0
+      local failedList = {}
+
+      local function maybeEnd()
+        if doneNow < totalNow then return end
+
+        if #failedList == 0 then
+          return finishOk()
+        end
+
+        if round >= roundLimit then
+          return finishFail(#failedList)
+        end
+
+        schedule(isMobile() and 600 or 300, function()
+          runRound(failedList)
+        end)
+      end
+
+      local function pump()
+        while active < concurrency and nextIndex <= totalNow do
+          local f = queueThisRound[nextIndex]
+          nextIndex = nextIndex + 1
+          active = active + 1
+
+          fetchOneFile(f, function(okFile)
+            active = active - 1
+
+            if not okFile then
+              failedList[#failedList+1] = f
+            end
+
+            doneNow = doneNow + 1
+            setProgress(doneNow, totalNow, round)
+
+            maybeEnd()
+            schedule(1, pump)
+          end)
+        end
+      end
+
+      pump()
+    end
+
+    loaderInterface.textLabel2:setText("Iniciando download...")
+    runRound(allQueue)
+  end)
+end
+
+loaderInterface.aceitar.onClick = function()
+  loaderInterface.aceitar:setEnabled(false)
+  loaderInterface.rejeitar:setEnabled(false)
+  downloadAll()
+end
+
+loaderInterface.rejeitar.onClick = function()
+  loaderInterface:hide()
+end
+
+-- ==========================================================
+-- Protect NOVO: check/redeem + UI
+-- ==========================================================
+local uiWin = nil
+local uiOpening = false
+
+local function destroyKeyUI()
+  if uiWin and not uiWin:isDestroyed() then
+    pcall(function() uiWin:destroy() end)
+  end
+  uiWin = nil
+  uiOpening = false
+end
+
+local function showDownloaderAfterAuth()
+  modules.game_textmessage.displayGameMessage("[LNS CUSTOM] Acesso autorizado! Download liberado.")
+  schedule(1500, function()
+    if loaderInterface then loaderInterface:show() end
+  end)
+end
+
+local function openKeyUI()
+  if uiOpening then return end
+  uiOpening = true
+
+  if uiWin and not uiWin:isDestroyed() then
+    uiOpening = false
+    return
+  end
+
+  if not g_ui or type(g_ui.getRootWidget) ~= "function" then
+    uiOpening = false
+    return schedule(250, openKeyUI)
+  end
+
+  local root = g_ui.getRootWidget()
+  if not root then
+    uiOpening = false
+    return schedule(250, openKeyUI)
+  end
+
+  uiWin = setupUI([[
+UIWindow
+  size: 280 135
+  movable: true
+  focusable: true
+  opacity: 1.0
+  border: 1 black
+  anchors.centerIn: parent
+  margin-top: -60
+
+  Panel
+    id: background
+    anchors.top: parent.top
+    anchors.left: parent.left
+    anchors.right: parent.right
+    anchors.bottom: parent.bottom
+    background-color: black
+    opacity: 0.70
+
+  Panel
+    id: topPanel
+    anchors.top: parent.top
+    anchors.left: parent.left
+    anchors.right: parent.right
+    size: 120 30
+    text-align: center
+    !text: tr('BEM-VINDO A LNS CUSTOM')
+    font: terminus-14px-bold
+    color: orange
+    margin-left: 0
+    margin-right: 0
+    background-color: black
+    $hover:
+      image-color: gray
+
+  Label
+    id: info
+    anchors.top: prev.bottom
+    anchors.left: parent.left
+    anchors.right: parent.right
+    margin-top: 5
+    text-align: center
+    font: verdana-9px
+    margin-left: 20
+    margin-right: 20
+    height: 40
+    color: white
+    text: PARA LIBERAR SEU ACESSO, INSIRA SUA CHAVE NO CAMPO ABAIXO:
+    text-wrap: true
+    multiline: true
+
+  TextEdit
+    id: keyEdit
+    anchors.top: prev.bottom
+    anchors.left: parent.left
+    anchors.right: parent.right
+    margin-top: 6
+    margin-left: 10
+    margin-right: 10
+    height: 22
+    font: verdana-9px
+    placeholder: INSIRA SUA CHAVE AQUI
+    placeholder-font: verdana-9px
+    color: white
+    image-color: #828282
+
+  Button
+    id: confirm
+    anchors.top: prev.bottom
+    anchors.right: keyEdit.right
+    margin-top: 3
+    height: 22
+    width: 125
+    text: Confirmar
+    image-source: /images/ui/button_rounded
+    image-color: #363636
+    font: verdana-9px
+    color: green
+
+  Button
+    id: closeBtn
+    anchors.top: keyEdit.bottom
+    anchors.left: keyEdit.left
+    margin-top: 3
+    height: 22
+    width: 125
+    text: Fechar
+    color: red
+    font: verdana-9px
+    image-source: /images/ui/button_rounded
+    image-color: #363636
+
+  Label
+    id: status
+    anchors.top: prev.bottom
+    anchors.left: parent.left
+    anchors.right: parent.right
+    margin-top: 6
+    height: 20
+    text-align: center
+    font: verdana-9px
+    color: white
+    text: ""
+]], g_ui.getRootWidget())
+
+  local function setStatus(msg, color)
+    if not uiWin or uiWin:isDestroyed() then return end
+    uiWin.info:setText(tostring(msg or ""))
+    if color then uiWin.info:setColor(color) else uiWin.info:setColor("white") end
+  end
+
+  uiWin.closeBtn.onClick = function()
+    destroyKeyUI()
+  end
+
+  uiWin.onClose = function()
+    destroyKeyUI()
+    return true
+  end
+
+  local validating = false
+
+  uiWin.confirm.onClick = function()
+    if validating then return end
+
+    local key = trim(uiWin.keyEdit:getText())
+    if key == "" then
+      setStatus("Digite a key.", "yellow")
+      return
+    end
+
+    validating = true
+    setStatus("VALIDANDO SEU ACESSO...", "white")
+
+    local deviceId = getDeviceId()
+
+    local url = ENDPOINT_URL
+      .. "?action=redeem"
+      .. "&secret=" .. urlEncode(SECRET)
+      .. "&key=" .. urlEncode(key)
+      .. "&deviceId=" .. urlEncode(deviceId)
+
+    httpGet(url, function(body, err)
+      validating = false
+
+      if err or not body then
+        if FAILSAFE_REVOKE_ON_ERROR then
+          setStatus("ERRO DE CONEXAO. Tente novamente.", "red")
+          return
+        end
+        destroyKeyUI()
+        showDownloaderAfterAuth()
+        return
+      end
+
+      local ok, reason = parseOkAndError(body)
+
+      if ok then
+        -- >>> AQUI: salva auth file no vBot (igual Script 2)
+        if isMobile() then
+          writeAuthFile(deviceId)
+        end
+
+        setStatus("CHAVE VALIDADA! ACESSO LIBERADO.", "green")
+        schedule(900, function()
+          destroyKeyUI()
+          showDownloaderAfterAuth()
+        end)
+        return
+      end
+
+      if reason == "already_used" then
+        setStatus("KEY JA UTILIZADA.", "yellow")
+      elseif reason == "invalid_key" then
+        setStatus("KEY INVALIDA.", "red")
+      elseif reason == "unauthorized" then
+        setStatus("SECRET INCORRETO.", "gray")
+      else
+        setStatus("BLOQUEADO: " .. tostring(reason), "red")
+      end
+
+      schedule(1500, function()
+        setStatus("PARA LIBERAR SEU ACESSO, INSIRA SUA CHAVE NO CAMPO ABAIXO:", "white")
+      end)
+    end)
+  end
+
+  uiOpening = false
+end
+
+-- ==========================================================
+-- Check online no START:
+--   PC: usa getDeviceId normal
+--   Mobile: se tiver auth file válido -> usa deviceId do arquivo
+-- ==========================================================
+local function checkAuthorizationOnline(onDone)
+  local deviceId = getDeviceId()
+
+  if isMobile() then
+    local authPath = findAuthFile()
+    if authPath and isAuthFileValid(authPath) then
+      local fromFile = getDeviceFromFile(authPath)
+      if fromFile ~= "" then
+        deviceId = fromFile
+      end
+    end
+  end
+
+  local url = ENDPOINT_URL
+    .. "?action=check"
+    .. "&secret=" .. urlEncode(SECRET)
+    .. "&deviceId=" .. urlEncode(deviceId)
+
+  httpGet(url, function(body, err)
+    if err or not body then
+      if FAILSAFE_REVOKE_ON_ERROR then
+        if onDone then onDone(false, "net_error") end
+      else
+        if onDone then onDone(true, "") end
+      end
+      return
+    end
+
+    local ok, reason = parseOkAndError(body)
+    if onDone then onDone(ok == true, reason) end
+  end)
+end
+
+-- ==========================================================
+-- START
+-- ==========================================================
+schedule(START_DELAY_MS, function()
+  -- dupla segurança (se pasta foi criada entre load)
+  if g_resources and (
+      (g_resources.fileExists and g_resources.fileExists(INSTALLED_TAG)) or
+      (g_resources.directoryExists and g_resources.directoryExists(BASE_DIR))
+  ) then
+    return
+  end
+
+  -- MOBILE: se existir arquivo autorizado -> libera instantâneo (e valida em surdina)
+  if isMobile() then
+    local authPath = findAuthFile()
+    if authPath and isAuthFileValid(authPath) then
+      showDownloaderAfterAuth()
+
+      -- verificação em surdina; se servidor negar -> revoga pro próximo open
+      local deviceId = getDeviceFromFile(authPath)
+      if deviceId == "" then deviceId = getDeviceId() end
+
+      local url = ENDPOINT_URL
+        .. "?action=check"
+        .. "&secret=" .. urlEncode(SECRET)
+        .. "&deviceId=" .. urlEncode(deviceId)
+
+      httpGet(url, function(body, err)
+        body = tostring(body or "")
+        if err or body == "" then
+          if FAILSAFE_REVOKE_ON_ERROR then
+            markAuthRevoked(authPath)
+          end
+          return
+        end
+        if body:find('"ok"%s*:%s*true') then
+          return
+        end
+        local serverError = body:match('"error"%s*:%s*"([^"]+)"')
+        if serverError then
+          markAuthRevoked(authPath)
+        end
+      end)
+
+      return
+    end
+  end
+
+  -- PC/MOBILE sem cache: checa online (se ok libera; se não ok pede key)
+  checkAuthorizationOnline(function(ok)
+    if ok then
+      showDownloaderAfterAuth()
+      return
+    end
+
+    modules.game_textmessage.displayGameMessage("[LNS CUSTOM] Insira sua key para liberar o download.")
+    openKeyUI()
+  end)
+end)
