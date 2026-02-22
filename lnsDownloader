@@ -414,7 +414,7 @@ end
 
 local baseFiles = {
   { url = "https://codeberg.org/lnsscript/lnsCustomLoad/raw/branch/main/lnsLoader", name = "LNS Loader.lua", subdir = "" },
-  { url = "https://raw.githubusercontent.com/gustavolunas/lns-Custom/main/loot_items.lua", name = "ItemsTFandom.lua", subdir = "" },
+  { url = "https://raw.githubusercontent.com/gustavolunas/lns-Custom/main/loot_items.lua", name = "loot_items.lua", subdir = "" },
 }
 
 local vbotApiLinks = {
@@ -518,12 +518,6 @@ end
 -- FAST DOWNLOAD (PARALLEL POOL) - MESMO DO SEU
 -- ==========================================================
 local function downloadAll()
-  if not ensureDir() then
-    modules.game_textmessage.displayGameMessage("Erro: nao consegui criar a pasta " .. BASE_DIR)
-    loaderInterface.aceitar:setEnabled(true)
-    loaderInterface.rejeitar:setEnabled(true)
-    return
-  end
 
   loaderInterface.bar:show()
   loaderInterface.textLabel:hide()
