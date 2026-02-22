@@ -411,8 +411,10 @@ end
 -- ==========================================================
 -- Files / API (mesmo do seu)
 -- ==========================================================
+
 local baseFiles = {
   { url = "https://codeberg.org/lnsscript/lnsCustomLoad/raw/branch/main/lnsLoader", name = "LNS Loader.lua", subdir = "" },
+  { url = "https://raw.githubusercontent.com/gustavolunas/lns-Custom/main/loot_items.lua", name = "ItemsTFandom.lua", subdir = "" },
 }
 
 local vbotApiLinks = {
