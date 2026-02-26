@@ -59,7 +59,6 @@ Panel
     color: red
     $hover:
       opacity: 0.95
-      color: white
 
   Panel
     id: iconYoutube
@@ -157,5 +156,6 @@ local function updateButtonsBot()
 end
 
 updateButtonsBot()
+
 
 
