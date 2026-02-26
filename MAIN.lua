@@ -34,8 +34,7 @@ Panel
     opacity: 1.00
     color: white
     $hover:
-      opacity: 0.95
-      color: green
+      opacity: 0.90
 
   Label
     id: iconDiscord
@@ -58,7 +57,7 @@ Panel
     opacity: 1.00
     color: red
     $hover:
-      opacity: 0.95
+      opacity: 0.90
 
   Panel
     id: iconYoutube
@@ -156,6 +155,7 @@ local function updateButtonsBot()
 end
 
 updateButtonsBot()
+
 
 
 
