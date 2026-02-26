@@ -67,7 +67,7 @@ Panel
     anchors.verticalCenter: prev.verticalCenter
     margin-top: -1
     margin-left: 2
-    size: 30 17
+    size: 20 13
 
   HorizontalSeparator
     id: sep2
@@ -157,4 +157,5 @@ local function updateButtonsBot()
 end
 
 updateButtonsBot()
+
 
