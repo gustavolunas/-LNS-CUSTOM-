@@ -4,7 +4,7 @@ local panelName = "codPanel"
 local codPanel = setupUI([[
 Panel
   id: codPanel
-  height: 60
+  height: 90
   margin-top: 0
 
   Label
@@ -12,7 +12,7 @@ Panel
     anchors.left: parent.left
     anchors.right: parent.right
     anchors.top: parent.top
-    margin-top: 5
+    margin-top: 0
     height: 55
     text-align: center
     text-wrap: true
@@ -45,14 +45,46 @@ Panel
     size: 20 20
     image-source: /images/ui/discord
 
-  HorizontalSeparator
-    id: sep2
+  Button
+    id: buttonYoutube
     anchors.left: buttonDiscord.left
     anchors.right: buttonDiscord.right
-    anchors.top: buttonDiscord.bottom
+    anchors.top: prev.bottom
+    text: YouTube
+    font: verdana-9px
+    image-source: /images/ui/button_rounded
+    image-color: #363636
+    margin-top: 4
+    opacity: 1.00
+    color: red
+    $hover:
+      opacity: 0.95
+      color: white
+
+  Panel
+    id: iconYoutube
+    anchors.left: prev.left
+    anchors.verticalCenter: prev.verticalCenter
+    margin-top: -1
+    margin-left: 2
+    size: 30 17
+
+  HorizontalSeparator
+    id: sep2
+    anchors.left: buttonYoutube.left
+    anchors.right: buttonYoutube.right
+    anchors.top: buttonYoutube.bottom
     margin-top: 5
 ]])
-codPanel.textLabel2:setText("LNS Custom v1.0")
+codPanel.textLabel2:setText("[LNS Custom]")
+local link = "https://imgur.com/7DxD39S.png"
+HTTP.downloadImage(link, function(texId)
+  if texId then
+    codPanel.iconYoutube:setImageSource(texId)
+  else
+    warn("Falha ao baixar imagem: " .. link)
+  end
+end)
 
 codPanel.buttonDiscord.onClick = function()
   modules.game_textmessage.displayGameMessage("Carregando convite ao Discord, aguarde...")
