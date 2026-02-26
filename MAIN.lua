@@ -138,18 +138,6 @@ end)
 
 MyConfigName = modules.game_bot.contentsPanel.config:getCurrentOption().text
 
-local count = 0
-local function removeSeparators()
-  for _, i in pairs(modules.game_bot.botWindow.contentsPanel:getChildren()) do
-    if count >= 2 then break end
-      if i:getStyleName() == "HorizontalSeparator" then
-        i:destroy()
-        count = count + 1
-      end
-  end
-end
-removeSeparators()
-
 local function updateButtonsBot()
     modules.game_bot.contentsPanel.config:setImageColor("gray")
     modules.game_bot.contentsPanel.config:setOpacity(1.00)
