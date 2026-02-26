@@ -12,7 +12,7 @@ Panel
     anchors.left: parent.left
     anchors.right: parent.right
     anchors.top: parent.top
-    margin-top: 0
+    margin-top: -3
     height: 55
     text-align: center
     text-wrap: true
@@ -156,6 +156,7 @@ local function updateButtonsBot()
 end
 
 updateButtonsBot()
+
 
 
 
