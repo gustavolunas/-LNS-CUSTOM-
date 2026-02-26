@@ -4,7 +4,7 @@ local panelName = "codPanel"
 local codPanel = setupUI([[
 Panel
   id: codPanel
-  height: 90
+  height: 75
   margin-top: 0
 
   Label
@@ -157,3 +157,4 @@ local function updateButtonsBot()
 end
 
 updateButtonsBot()
+
