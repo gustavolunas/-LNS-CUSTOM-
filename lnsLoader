@@ -4,7 +4,21 @@ local macros = {
   "MAIN",
   "COMBO",
   "HEALING",
-
+  "CONDITIONS",
+  "SWAP",
+  "FOLLOW",
+  "UTILITARIOS",
+  "TRAVEL",
+  "AUTOSIO",
+  "SWAPEQUIP",
+  "PUSHMAX",
+  "MWSYSTEM",
+  "ICONS",
+  "HUD",
+  "INGAME",
+  "PARTY",
+  "IMBUIMENT",
+  "CONTAINER",
 }
 
 local RETRY_BASE_MS = 250
