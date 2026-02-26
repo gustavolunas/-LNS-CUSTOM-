@@ -1,23 +1,10 @@
-local baseUrl = "https://raw.githubusercontent.com/gustavolunas/lns-Custom/refs/heads/main/"
+local baseUrl = "https://raw.githubusercontent.com/gustavolunas/-LNS-CUSTOM-/refs/heads/main/"
 
 local macros = {
   "MAIN",
   "COMBO",
   "HEALING",
-  "CONDITIONS",
-  "SWAP",
-  "FOLLOW",
-  "UTILITARIOS",
-  "TRAVEL",
-  "AUTOSIO",
-  "SWAPEQUIP",
-  "PUSHMAX",
-  "ICONS",
-  "HUD",
-  "INGAME",
-  "PARTY",
-  "IMBUIMENT",
-  "CONTAINER",
+
 }
 
 local RETRY_BASE_MS = 250
